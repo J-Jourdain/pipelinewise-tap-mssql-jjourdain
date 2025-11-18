@@ -5,6 +5,7 @@ import pendulum
 import singer
 from datetime import datetime
 from singer import metadata
+from singer.schema import Schema
 
 import tap_mssql.sync_strategies.common as common
 from tap_mssql.connection import MSSQLConnection, connect_with_backoff
@@ -19,9 +20,11 @@ def sync_table(mssql_conn, config, catalog_entry, state, columns):
     common.whitelist_bookmark_keys(BOOKMARK_KEYS, catalog_entry.tap_stream_id, state)
 
     catalog_metadata = metadata.to_map(catalog_entry.metadata)
+    # {(): {'selected-by-default': False, 'database-name': 'dbo', 'is-view': False, 'selected': True, 'replication-method': 'INCREMENTAL', 'replication-key': 'InsertionTime', 'multi-column-replication-key': "CASE WHEN ISNULL(InsertionTime, '1900-01-01') >= ISNULL(ResultsRptStatusChngDateTime, '1900-01-01') THEN ISNULL(InsertionTime, ResultsRptStatusChngDateTime) ELSE ISNULL(ResultsRptStatusChngDateTime, InsertionTime) END", 'table-key-properties': []}, ('properties', 'ReportDBID'): {'selected-by-default': True, 'sql-datatype': 'int'}, ('properties', 'PatientID'): {'selected-by-default': True, 'sql-datatype': 'int'}, ('properties', 'InsertionTime'): {'selected-by-default': True, 'sql-datatype': 'datetime'}, ('properties', 'ResultsRptStatusChngDateTime'): {'selected-by-default': True, 'sql-datatype': 'datetime'}}
     stream_metadata = catalog_metadata.get((), {})
-
+    # {'selected-by-default': False, 'database-name': 'dbo', 'is-view': False, 'selected': True, 'replication-method': 'INCREMENTAL', 'replication-key': 'InsertionTime', 'multi-column-replication-key': "CASE WHEN ISNULL(InsertionTime, '1900-01-01') >= ISNULL(ResultsRptStatusChngDateTime, '1900-01-01') THEN ISNULL(InsertionTime, ResultsRptStatusChngDateTime) ELSE ISNULL(ResultsRptStatusChngDateTime, InsertionTime) END", 'table-key-properties': []}
     replication_key_metadata = stream_metadata.get("replication-key")
+    # InsertionTime
     replication_key_state = singer.get_bookmark(
         state, catalog_entry.tap_stream_id, "replication_key"
     )
@@ -73,8 +76,15 @@ def sync_table(mssql_conn, config, catalog_entry, state, columns):
 
                 params["replication_key_value"] = replication_key_value
             elif replication_key_metadata is not None:
-                select_sql += ' ORDER BY "{}" ASC'.format(replication_key_metadata)
-
+                #select_sql += ' ORDER BY "{}" ASC'.format(replication_key_metadata)
+                replication_key_metadata_multi = ['InsertionTime', 'ResultsRptStatusChngDateTime']
+                LOGGER.info(' ORDER BY (SELECT MAX(val) FROM (VALUES {}) AS t(val)) ASC'.format(", ".join([f"(ISNULL({col}, '1900-01-01'))" for col in replication_key_metadata_multi])))
+                select_sql += ' ORDER BY (SELECT MAX(val) FROM (VALUES {}) AS t(val)) ASC'.format(", ".join([f"(ISNULL({col}, '1900-01-01'))" for col in replication_key_metadata_multi]))
+                replication_key_sql_data_type = catalog_entry.schema.properties[replication_key_metadata].additionalProperties['sql_data_type']
+                replication_key_format = catalog_entry.schema.properties[replication_key_metadata].additionalProperties['sql_data_type']
+                catalog_entry.schema.properties["MultiReplicationKeyColumn"] = Schema(inclusion='automatic', additionalProperties=replication_key_sql_data_type, format=replication_key_format)
+                columns.append('MultiReplicationKeyColumn')
+ 
             common.sync_query(
                 cur, catalog_entry, state, select_sql, columns, stream_version, params, config
             )
