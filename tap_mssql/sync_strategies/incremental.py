@@ -20,16 +20,16 @@ def sync_table(mssql_conn, config, catalog_entry, state, columns):
     common.whitelist_bookmark_keys(BOOKMARK_KEYS, catalog_entry.tap_stream_id, state)
 
     catalog_metadata = metadata.to_map(catalog_entry.metadata)
-    # {(): {'selected-by-default': False, 'database-name': 'dbo', 'is-view': False, 'selected': True, 'replication-method': 'INCREMENTAL', 'replication-key': 'InsertionTime', 'multi-column-replication-key': "CASE WHEN ISNULL(InsertionTime, '1900-01-01') >= ISNULL(ResultsRptStatusChngDateTime, '1900-01-01') THEN ISNULL(InsertionTime, ResultsRptStatusChngDateTime) ELSE ISNULL(ResultsRptStatusChngDateTime, InsertionTime) END", 'table-key-properties': []}, ('properties', 'ReportDBID'): {'selected-by-default': True, 'sql-datatype': 'int'}, ('properties', 'PatientID'): {'selected-by-default': True, 'sql-datatype': 'int'}, ('properties', 'InsertionTime'): {'selected-by-default': True, 'sql-datatype': 'datetime'}, ('properties', 'ResultsRptStatusChngDateTime'): {'selected-by-default': True, 'sql-datatype': 'datetime'}}
+    
     stream_metadata = catalog_metadata.get((), {})
-    # {'selected-by-default': False, 'database-name': 'dbo', 'is-view': False, 'selected': True, 'replication-method': 'INCREMENTAL', 'replication-key': 'InsertionTime', 'multi-column-replication-key': "CASE WHEN ISNULL(InsertionTime, '1900-01-01') >= ISNULL(ResultsRptStatusChngDateTime, '1900-01-01') THEN ISNULL(InsertionTime, ResultsRptStatusChngDateTime) ELSE ISNULL(ResultsRptStatusChngDateTime, InsertionTime) END", 'table-key-properties': []}
+    
     replication_key_metadata = stream_metadata.get("replication-key")
     # InsertionTime
     replication_key_state = singer.get_bookmark(
         state, catalog_entry.tap_stream_id, "replication_key"
     )
 
-    multi_column_replication = stream_metadata.get("multi-column-replication", False)
+    multi_column_replication = stream_metadata.get("multi-column-replication-key", False)
 
     replication_key_value = None
 
@@ -51,16 +51,16 @@ def sync_table(mssql_conn, config, catalog_entry, state, columns):
     )
 
     # Added below
-    replication_key_multi_column = [c.strip() for c in replication_key_metadata.split(',')]
-    if len(replication_key_multi_column) > 1:  # Catch multiple replication keys passed, but no multi flag.
+    if isinstance(replication_key_metadata, list) and len(replication_key_metadata) > 1:  # Catch multiple replication keys passed, but no multi flag.
         LOGGER.warning(
-            "multi-column-replication is False, but more than one replication-key was listed. Attempting multi column replication, setting multi-column-replication=True"    
+            "multi-column-replication-key is False, but more than one replication-key was listed. Attempting multi column replication, setting multi-column-replication-key=True"    
         )
         multi_column_replication = True
     if multi_column_replication:
-        data_types_of_replication_keys = [catalog_entry.schema.properties[col].additionalProperties['sql_data_type'] for col in replication_key_multi_column]
-        formats_of_replication_keys = [catalog_entry.schema.properties[col].format for col in replication_key_multi_column]
-        types_of_replication_keys = [catalog_entry.schema.properties[col].type for col in replication_key_multi_column]
+        replication_key_multi_column = replication_key_metadata
+        data_types_of_replication_keys = [catalog_entry.schema.properties[col].additionalProperties['sql_data_type'] for col in replication_key_metadata]
+        formats_of_replication_keys = [catalog_entry.schema.properties[col].format for col in replication_key_metadata]
+        types_of_replication_keys = [catalog_entry.schema.properties[col].type for col in replication_key_metadata]
         outcome = all(lst == types_of_replication_keys[0] for lst in types_of_replication_keys)
         outcome2 = len(set(data_types_of_replication_keys))
         outcome3 = len(set(formats_of_replication_keys))
@@ -68,7 +68,7 @@ def sync_table(mssql_conn, config, catalog_entry, state, columns):
             # Multiple replication key columns have been provided. All are of the same data type, so can continue. Adding manufactured column into catalog and column selection list:
             catalog_entry.schema.properties["MultiReplicationKeyColumn"] = Schema(
                 inclusion='automatic',
-                additionalProperties={'sql_data_type': data_types_of_replication_keys[0], 'replication_keys':replication_key_multi_column},
+                additionalProperties={'sql_data_type': data_types_of_replication_keys[0], 'replication_keys':replication_key_metadata},
                 format=formats_of_replication_keys[0],
                 type=types_of_replication_keys[0],
             )

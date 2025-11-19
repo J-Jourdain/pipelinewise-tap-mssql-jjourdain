@@ -652,7 +652,7 @@ class TestMultiKeyIncrementalReplication(unittest.TestCase):
             ]
 
             stream.stream = stream.table
-            test_utils.set_replication_method_and_key(stream, "INCREMENTAL", "inserted, updated")
+            test_utils.set_replication_method_and_key(stream, "INCREMENTAL", ["inserted", "updated"])
 
     def test_with_no_state(self):
         state = {}
@@ -680,7 +680,7 @@ class TestMultiKeyIncrementalReplication(unittest.TestCase):
                 "dbo-incremental": {
                     "version": 1,
                     "replication_key_value": "2017-06-20",
-                    "replication_key": "inserted, updated",
+                    "replication_key": ["inserted", "updated"],
                 }
             }
         }
