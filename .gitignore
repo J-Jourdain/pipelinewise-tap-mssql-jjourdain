@@ -132,3 +132,9 @@ dmypy.json
 config.json
 state.json
 properties.json
+
+# Stream output
+output.json
+
+# VSCode Debugger
+.vscode/

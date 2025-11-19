@@ -137,16 +137,26 @@ def generate_select_sql(catalog_entry, columns):
     database_name = get_database_name(catalog_entry)
     escaped_db = escape(database_name)
     escaped_table = escape(catalog_entry.table)
-    escaped_columns = map(lambda c: prepare_columns_sql(catalog_entry, c), columns)
     
     # Added the below lines
-    multi_replication_key_columns = ['InsertionTime', 'ResultsRptStatusChngDateTime']
-    escaped_multi_replication_key_columns = map(lambda c: prepare_columns_sql(catalog_entry, c), multi_replication_key_columns)
-
-    if escaped_multi_replication_key_columns:
-        select_sql = "SELECT {}, (SELECT MAX(val) FROM (VALUES {}) AS t(val)) as MultiReplicationKeyColumn FROM {}.{}".format(",".join(escaped_columns), ", ".join([f"(ISNULL({col}, '1900-01-01'))" for col in escaped_multi_replication_key_columns]), escaped_db, escaped_table)
+    if columns[-1] == 'MultiReplicationKeyColumn': # Multi-replication-key incremental query
+        multi_replication_key_columns = catalog_entry.schema.properties['MultiReplicationKeyColumn'].additionalProperties['replication_keys']
+        escaped_multi_replication_key_columns = map(lambda c: prepare_columns_sql(catalog_entry, c), multi_replication_key_columns)
+        columns.pop()
+        escaped_columns = map(lambda c: prepare_columns_sql(catalog_entry, c), columns)
+        select_sql = "SELECT {}, (SELECT MAX(val) FROM (VALUES {}) AS t(val)) as MultiReplicationKeyColumn FROM {}.{}".format(
+            ",".join(escaped_columns),
+            ", ".join([f"(ISNULL({col}, '1900-01-01'))" for col in list(escaped_multi_replication_key_columns)]),
+            escaped_db,
+            escaped_table
+        )
     else:
-        select_sql = "SELECT {} FROM {}.{}".format(",".join(escaped_columns), escaped_db, escaped_table)
+        escaped_columns = map(lambda c: prepare_columns_sql(catalog_entry, c), columns)
+        select_sql = "SELECT {} FROM {}.{}".format(
+            ",".join(escaped_columns),
+            escaped_db,
+            escaped_table
+        )
 
     return select_sql
 
@@ -227,13 +237,14 @@ def whitelist_bookmark_keys(bookmark_key_set, tap_stream_id, state):
         singer.clear_bookmark(state, tap_stream_id, bk)
 
 
-def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version, params, config):
+def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version, params, config, multi_column_replication):
     replication_key = singer.get_bookmark(state, catalog_entry.tap_stream_id, "replication_key")
 
     # query_string = cursor.mogrify(select_sql, params)
 
     time_extracted = utils.now()
-    LOGGER.info(select_sql)
+    # LOGGER.info(select_sql)
+    # LOGGER.info(replication_key)
     cursor.execute(select_sql, params)
 
     LOGGER.info(f"{ARRAYSIZE=}")
@@ -290,21 +301,29 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
                     )
 
             elif replication_method == "INCREMENTAL":
-                # Added below line
-                replication_key = ['InsertionTime', 'ResultsRptStatusChngDateTime']
-                if replication_key is not None:
+                if replication_key is not None and multi_column_replication:
                     state = singer.write_bookmark(
-                        state, catalog_entry.tap_stream_id, "replication_key", ", ".join(replication_key)
+                        state, catalog_entry.tap_stream_id, "replication_key", replication_key
                     )
 
                     state = singer.write_bookmark(
                         state,
                         catalog_entry.tap_stream_id,
                         "replication_key_value",
-                        # Added the below line
-                        record_message.record['MultiReplicationKeyColumn'],
-                        #record_message.record[replication_key],
+                        record_message.record['MultiReplicationKeyColumn']
                     )
+                elif replication_key is not None:
+                    state = singer.write_bookmark(
+                        state, catalog_entry.tap_stream_id, "replication_key", replication_key
+                    )
+
+                    state = singer.write_bookmark(
+                        state,
+                        catalog_entry.tap_stream_id,
+                        "replication_key_value",
+                        record_message.record[replication_key]
+                    )
+
             if rows_saved % 1000 == 0:
                 singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
 
