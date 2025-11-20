@@ -619,14 +619,24 @@ class TestMultiKeyIncrementalReplication(unittest.TestCase):
         with connect_with_backoff(self.conn) as open_conn:
             with open_conn.cursor() as cursor:
                 try:
-                    cursor.execute("drop table incremental")
+                    cursor.execute("drop table two_incremental")
                 except:
                     pass
-                cursor.execute("CREATE TABLE incremental (val int, inserted datetime, updated datetime)")
-                cursor.execute("INSERT INTO incremental (val, inserted, updated) VALUES (1, '2017-06-01', null)")
-                cursor.execute("INSERT INTO incremental (val, inserted, updated) VALUES (2, '2017-06-01', '2017-06-20')")
-                cursor.execute("INSERT INTO incremental (val, inserted, updated) VALUES (3, '2017-06-20', null)")
-                cursor.execute("INSERT INTO incremental (val, inserted, updated) VALUES (4, '2017-09-22', '2017-09-23')")
+                cursor.execute("CREATE TABLE two_incremental (val int, inserted datetime, updated datetime)")
+                cursor.execute("INSERT INTO two_incremental (val, inserted, updated) VALUES (1, '2017-06-01', null)")
+                cursor.execute("INSERT INTO two_incremental (val, inserted, updated) VALUES (2, '2017-06-01', '2017-06-20')")
+                cursor.execute("INSERT INTO two_incremental (val, inserted, updated) VALUES (3, '2017-06-20', null)")
+                cursor.execute("INSERT INTO two_incremental (val, inserted, updated) VALUES (4, '2017-09-22', '2017-09-23')")
+                try:
+                    cursor.execute("drop table three_incremental")
+                except:
+                    pass
+                cursor.execute("CREATE TABLE three_incremental (val int, inserted datetime, updated datetime, deleted datetime)")
+                cursor.execute("INSERT INTO three_incremental (val, inserted, updated, deleted) VALUES (1, '2017-06-01', null, null)")
+                cursor.execute("INSERT INTO three_incremental (val, inserted, updated, deleted) VALUES (2, '2017-06-01', '2017-06-01', '2017-06-20')")
+                cursor.execute("INSERT INTO three_incremental (val, inserted, updated, deleted) VALUES (3, '2017-06-01', '2017-06-20', '2017-06-01')")
+                cursor.execute("INSERT INTO three_incremental (val, inserted, updated, deleted) VALUES (4, '2017-06-20', '2017-06-01', null)")
+                cursor.execute("INSERT INTO three_incremental (val, inserted, updated, deleted) VALUES (5, '2017-09-22', '2017-06-01', '2017-09-23')")
                 # try:
                 #     cursor.execute("drop table integer_incremental")
                 # except:
@@ -638,7 +648,7 @@ class TestMultiKeyIncrementalReplication(unittest.TestCase):
 
         self.catalog = test_utils.discover_catalog(self.conn, {})
 
-        for stream in self.catalog.streams:
+        for index, stream in enumerate(self.catalog.streams):
             stream.metadata = [
                 {
                     "breadcrumb": (),
@@ -652,7 +662,7 @@ class TestMultiKeyIncrementalReplication(unittest.TestCase):
             ]
 
             stream.stream = stream.table
-            test_utils.set_replication_method_and_key(stream, "INCREMENTAL", ["inserted", "updated"])
+            test_utils.set_replication_method_and_key(stream, "INCREMENTAL", ["inserted", "updated"] if index == 1 else ["inserted", "updated", "deleted"])
 
     def test_with_no_state(self):
         state = {}
@@ -668,19 +678,26 @@ class TestMultiKeyIncrementalReplication(unittest.TestCase):
         self.assertTrue(isinstance(versions[0], int))
         self.assertEqual(versions[0], versions[1])
         record_messages = [message for message in SINGER_MESSAGES if isinstance(message,singer.RecordMessage)]
-        incremental_record_messages = [m for m in record_messages if m.stream == 'dbo-incremental']
+        incremental_two_record_messages = [m for m in record_messages if m.stream == 'dbo-two_incremental']
+        incremental_three_record_messages = [m for m in record_messages if m.stream == 'dbo-three_incremental']
         # integer_incremental_record_messages = [m for m in record_messages if m.stream == 'dbo-integer_incremental']
         
-        self.assertEqual(len(incremental_record_messages),4)
+        self.assertEqual(len(incremental_two_record_messages),4)
+        self.assertEqual(len(incremental_three_record_messages),5)
         # self.assertEqual(len(integer_incremental_record_messages),4)
 
     def test_with_state(self):
         state = {
             "bookmarks": {
-                "dbo-incremental": {
+                "dbo-two_incremental": {
                     "version": 1,
                     "replication_key_value": "2017-06-20",
                     "replication_key": ["inserted", "updated"],
+                },
+                "dbo-three_incremental": {
+                    "version": 1,
+                    "replication_key_value": "2017-06-20",
+                    "replication_key": ["inserted", "updated", "deleted"],
                 }
             }
         }
@@ -703,10 +720,12 @@ class TestMultiKeyIncrementalReplication(unittest.TestCase):
         
         # Based on state values provided check the number of record messages emitted
         record_messages = [message for message in SINGER_MESSAGES if isinstance(message,singer.RecordMessage)]
-        incremental_record_messages = [m for m in record_messages if m.stream == 'dbo-incremental']
+        incremental_two_record_messages = [m for m in record_messages if m.stream == 'dbo-two_incremental']
+        incremental_three_record_messages = [m for m in record_messages if m.stream == 'dbo-three_incremental']
         # integer_incremental_record_messages = [m for m in record_messages if m.stream == 'dbo-integer_incremental']
         
-        self.assertEqual(len(incremental_record_messages),3)
+        self.assertEqual(len(incremental_two_record_messages),3)
+        self.assertEqual(len(incremental_three_record_messages),4)
         # self.assertEqual(len(integer_incremental_record_messages),1)
 
 
@@ -888,13 +907,13 @@ if __name__ == "__main__":
     # test1 = TestBinlogReplication()
     # test1.setUp()
     # test1.test_binlog_stream()
-    test1 = TestTypeMapping()
-    test1.setUpClass()
-    test1.test_decimal()
-    test2 = TestIncrementalReplication()
-    test2.setUp()
-    test2.test_with_no_state()
-    test2.test_with_state()
+    # test1 = TestTypeMapping()
+    # test1.setUpClass()
+    # test1.test_decimal()
+    # test2 = TestIncrementalReplication()
+    # test2.setUp()
+    # test2.test_with_no_state()
+    # test2.test_with_state()
     test3 = TestMultiKeyIncrementalReplication()
     test3.setUp()
     test3.test_with_no_state()
