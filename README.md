@@ -519,6 +519,47 @@ This invocation extracts any data since (and including) the
 {"type": "STATE", "value": {"bookmarks": {"example_db-animals": {"replication_key": "id", "version": 1509135204169, "replication_key_value": 6}}, "currently_syncing": null}}
 ```
 
+### Multiple Replication Key Incremental
+
+This version of tap-mssql also supports the use of multiple replication keys being used in combination. Presently, this is only supported for date/date-time fields. All columns used must be of the same datatype.
+
+This works by taking the greatest non-null date/date-time of two or more columns, and using that as the incremental replication key and stored replication value.
+
+#### Example
+
+Let's sync the `animals` table again, but this time using multi-key incremental
+replication. The replication method, replication keys, and multi-column-replication-key flag are set in the
+table's metadata entry in properties file:
+
+```json
+{
+  "streams": [
+    {
+      "tap_stream_id": "example_db-animals",
+      "table_name": "animals",
+      "schema": { ... },
+      "metadata": [
+        {
+          "breadcrumb": [],
+          "metadata": {
+            "row-count": 3,
+            "table-key-properties": [],
+            "database-name": "example_db",
+            "selected-by-default": false,
+            "is-view": false,
+            "replication-method": "INCREMENTAL",
+            "replication-key": ["inserted", "updated"],
+            "multi-column-replication-key": true
+          }
+        },
+        ...
+      ],
+      "stream": "animals"
+    }
+  ]
+}
+```
+
 ---
 
 Based on Stitch documentation
