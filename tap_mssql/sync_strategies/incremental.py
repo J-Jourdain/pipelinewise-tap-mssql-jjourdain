@@ -50,7 +50,7 @@ def sync_table(mssql_conn, config, catalog_entry, state, columns):
         stream=catalog_entry.stream, version=stream_version
     )
 
-    # Added below
+    # Added below for multi-column incremental replication
     if isinstance(replication_key_metadata, list) and len(replication_key_metadata) > 1:  # Catch multiple replication keys passed, but no multi flag.
         LOGGER.warning(
             "multi-column-replication-key is False, but more than one replication-key was listed. Attempting multi column replication, setting multi-column-replication-key=True"    
@@ -58,12 +58,14 @@ def sync_table(mssql_conn, config, catalog_entry, state, columns):
         multi_column_replication = True
     if multi_column_replication:
         replication_key_multi_column = replication_key_metadata
-        data_types_of_replication_keys = [catalog_entry.schema.properties[col].additionalProperties['sql_data_type'] for col in replication_key_metadata]
+        data_types_of_replication_keys = [
+            catalog_entry.schema.properties[col].additionalProperties.get('sql_data_type', 'No sql data type')
+            if getattr(catalog_entry.schema.properties[col], 'additionalProperties', None)
+            else 'No sql data type'
+            for col in replication_key_metadata
+        ]
         formats_of_replication_keys = [catalog_entry.schema.properties[col].format for col in replication_key_metadata]
         types_of_replication_keys = [catalog_entry.schema.properties[col].type for col in replication_key_metadata]
-        outcome = all(lst == types_of_replication_keys[0] for lst in types_of_replication_keys)
-        outcome2 = len(set(data_types_of_replication_keys))
-        outcome3 = len(set(formats_of_replication_keys))
         if len(set(data_types_of_replication_keys)) == 1 and len(set(formats_of_replication_keys)) == 1 and all(lst == types_of_replication_keys[0] for lst in types_of_replication_keys):
             # Multiple replication key columns have been provided. All are of the same data type, so can continue. Adding manufactured column into catalog and column selection list:
             catalog_entry.schema.properties["MultiReplicationKeyColumn"] = Schema(
@@ -74,8 +76,15 @@ def sync_table(mssql_conn, config, catalog_entry, state, columns):
             )
             columns.append('MultiReplicationKeyColumn')
             replication_key_metadata = 'MultiReplicationKeyColumn'
-        else:
-            pass # Multiple replication key columns have been provided, but there is a difference in details for each column.
+        else: # Multiple replication key columns have been provided, but there is a difference in details for each column.
+            msg = "Data types, formats, or types of specified replication key columns are not all the same Data types: '{}', formats: '{}', types: '{}".format(
+                "', '".join(data_types_of_replication_keys),
+                "', '".join(f if f is not None else 'None' for f in formats_of_replication_keys),
+                "', '".join(str(t) if isinstance(t, list) else 'Not a list' for t in types_of_replication_keys))
+            LOGGER.error(msg)
+            raise Exception(
+                msg
+            )
 
     singer.write_message(activate_version_message)
     LOGGER.info("Beginning SQL")
