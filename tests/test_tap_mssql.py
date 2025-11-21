@@ -729,6 +729,219 @@ class TestMultiKeyIncrementalReplication(unittest.TestCase):
         # self.assertEqual(len(integer_incremental_record_messages),1)
 
 
+class TestHeaderTableIncrementalReplication(unittest.TestCase):
+    def setUp(self):
+        self.conn = test_utils.get_test_connection()
+
+        with connect_with_backoff(self.conn) as open_conn:
+            with open_conn.cursor() as cursor:
+                try:
+                    cursor.execute("drop table header")
+                except:
+                    pass
+                cursor.execute("CREATE TABLE header (val int, updated datetime)")
+                cursor.execute("INSERT INTO header (val, updated) VALUES (1, '2017-06-01')")
+                cursor.execute("INSERT INTO header (val, updated) VALUES (2, '2017-06-20')")
+                cursor.execute("INSERT INTO header (val, updated) VALUES (3, '2017-09-22')")
+                try:
+                    cursor.execute("drop table child")
+                except:
+                    pass
+                cursor.execute("CREATE TABLE child (val int, description varchar(10))")
+                cursor.execute("INSERT INTO child (val, description) VALUES (1, 'Record 1')")
+                cursor.execute("INSERT INTO child (val, description) VALUES (2, 'Record 2')")
+                cursor.execute("INSERT INTO child (val, description) VALUES (3, 'Record 3')")
+
+        self.catalog = test_utils.discover_catalog(self.conn, {})
+
+        for index, stream in enumerate(self.catalog.streams):
+            stream.metadata = [
+                {
+                    "breadcrumb": (),
+                    "metadata": {
+                        "selected": True,
+                        "table-key-properties": [],
+                        "database-name": "dbo",
+                    },
+                },
+                {"breadcrumb": ("properties", "val"), "metadata": {"selected": True}},
+            ]
+
+            stream.stream = stream.table
+            if stream.table == 'header':
+                test_utils.set_replication_method_and_key(stream, "INCREMENTAL", "updated")
+            else:
+                test_utils.set_replication_method_and_key_and_header_table_config(stream, "INCREMENTAL", "updated", False, True, 'header', 'val')
+
+    def test_with_no_state(self):
+        state = {}
+
+        global SINGER_MESSAGES
+        SINGER_MESSAGES.clear()
+
+        tap_mssql.do_sync(self.conn, test_utils.get_db_config(), self.catalog, state)
+
+        (message_types, versions) = message_types_and_versions(SINGER_MESSAGES)
+
+
+        self.assertTrue(isinstance(versions[0], int))
+        self.assertEqual(versions[0], versions[1])
+        record_messages = [message for message in SINGER_MESSAGES if isinstance(message,singer.RecordMessage)]
+        header_record_messages = [m for m in record_messages if m.stream == 'dbo-header']
+        child_record_messages = [m for m in record_messages if m.stream == 'dbo-child']
+        #integer_incremental_record_messages = [m for m in record_messages if m.stream == 'dbo-integer_incremental']
+        
+        self.assertEqual(len(header_record_messages),3)
+        self.assertEqual(len(child_record_messages),3)
+
+    def test_with_state(self):
+        state = {
+            "bookmarks": {
+                "dbo-header": {
+                    "version": 1,
+                    "replication_key_value": "2017-06-20",
+                    "replication_key": "updated",
+                },
+                "dbo-child": {
+                    "version": 1,
+                    "replication_key_value": "2017-06-20",
+                    "replication_key": "updated",
+                },
+            }
+        }
+
+        global SINGER_MESSAGES
+        SINGER_MESSAGES.clear()
+        tap_mssql.do_sync(self.conn, test_utils.get_db_config(), self.catalog, state)
+
+        (message_types, versions) = message_types_and_versions(SINGER_MESSAGES)
+
+        self.assertEqual(
+            [
+                "ActivateVersionMessage",
+                "RecordMessage",
+            ],
+            sorted(list(set(message_types))),
+        )
+        self.assertTrue(isinstance(versions[0], int))
+        self.assertEqual(versions[0], versions[1])
+        
+        # Based on state values provided check the number of record messages emitted
+        record_messages = [message for message in SINGER_MESSAGES if isinstance(message,singer.RecordMessage)]
+        header_record_messages = [m for m in record_messages if m.stream == 'dbo-header']
+        child_record_messages = [m for m in record_messages if m.stream == 'dbo-child']
+        
+        self.assertEqual(len(header_record_messages),2)
+        self.assertEqual(len(child_record_messages),2)
+
+
+class TestMultiColumnHeaderTableIncrementalReplication(unittest.TestCase):
+    def setUp(self):
+        self.conn = test_utils.get_test_connection()
+
+        with connect_with_backoff(self.conn) as open_conn:
+            with open_conn.cursor() as cursor:
+                try:
+                    cursor.execute("drop table header")
+                except:
+                    pass
+                cursor.execute("CREATE TABLE header (val int, inserted datetime, updated datetime)")
+                cursor.execute("INSERT INTO header (val, inserted, updated) VALUES (1, '2017-06-01', null)")
+                cursor.execute("INSERT INTO header (val, inserted, updated) VALUES (2, '2017-06-01', '2017-06-20')")
+                cursor.execute("INSERT INTO header (val, inserted, updated) VALUES (3, '2017-06-20', null)")
+                cursor.execute("INSERT INTO header (val, inserted, updated) VALUES (4, '2017-09-22', '2017-09-23')")
+                try:
+                    cursor.execute("drop table child")
+                except:
+                    pass
+                cursor.execute("CREATE TABLE child (val int, description varchar(10))")
+                cursor.execute("INSERT INTO child (val, description) VALUES (1, 'Record 1')")
+                cursor.execute("INSERT INTO child (val, description) VALUES (2, 'Record 2')")
+                cursor.execute("INSERT INTO child (val, description) VALUES (3, 'Record 3')")
+
+        self.catalog = test_utils.discover_catalog(self.conn, {})
+
+        for index, stream in enumerate(self.catalog.streams):
+            stream.metadata = [
+                {
+                    "breadcrumb": (),
+                    "metadata": {
+                        "selected": True,
+                        "table-key-properties": [],
+                        "database-name": "dbo",
+                    },
+                },
+                {"breadcrumb": ("properties", "val"), "metadata": {"selected": True}},
+            ]
+
+            stream.stream = stream.table
+            if stream.table == 'header':
+                test_utils.set_replication_method_and_key(stream, "INCREMENTAL", ["inserted", "updated"])
+            else:
+                test_utils.set_replication_method_and_key_and_header_table_config(stream, "INCREMENTAL", ["inserted", "updated"], True, True, 'header', 'val')
+
+    def test_with_no_state(self):
+        state = {}
+
+        global SINGER_MESSAGES
+        SINGER_MESSAGES.clear()
+
+        tap_mssql.do_sync(self.conn, test_utils.get_db_config(), self.catalog, state)
+
+        (message_types, versions) = message_types_and_versions(SINGER_MESSAGES)
+
+
+        self.assertTrue(isinstance(versions[0], int))
+        self.assertEqual(versions[0], versions[1])
+        record_messages = [message for message in SINGER_MESSAGES if isinstance(message,singer.RecordMessage)]
+        header_record_messages = [m for m in record_messages if m.stream == 'dbo-header']
+        child_record_messages = [m for m in record_messages if m.stream == 'dbo-child']
+        #integer_incremental_record_messages = [m for m in record_messages if m.stream == 'dbo-integer_incremental']
+        
+        self.assertEqual(len(header_record_messages),4)
+        self.assertEqual(len(child_record_messages),3)
+
+    def test_with_state(self):
+        state = {
+            "bookmarks": {
+                "dbo-header": {
+                    "version": 1,
+                    "replication_key_value": "2017-06-20",
+                    "replication_key": ["inserted", "updated"],
+                },
+                "dbo-child": {
+                    "version": 1,
+                    "replication_key_value": "2017-06-20",
+                    "replication_key": ["inserted", "updated"],
+                },
+            }
+        }
+
+        global SINGER_MESSAGES
+        SINGER_MESSAGES.clear()
+        tap_mssql.do_sync(self.conn, test_utils.get_db_config(), self.catalog, state)
+
+        (message_types, versions) = message_types_and_versions(SINGER_MESSAGES)
+
+        self.assertEqual(
+            [
+                "ActivateVersionMessage",
+                "RecordMessage",
+            ],
+            sorted(list(set(message_types))),
+        )
+        self.assertTrue(isinstance(versions[0], int))
+        self.assertEqual(versions[0], versions[1])
+        
+        # Based on state values provided check the number of record messages emitted
+        record_messages = [message for message in SINGER_MESSAGES if isinstance(message,singer.RecordMessage)]
+        header_record_messages = [m for m in record_messages if m.stream == 'dbo-header']
+        child_record_messages = [m for m in record_messages if m.stream == 'dbo-child']
+        
+        self.assertEqual(len(header_record_messages),3)
+        self.assertEqual(len(child_record_messages),2)
+
+
 class TestViews(unittest.TestCase):
     def setUp(self):
         self.conn = test_utils.get_test_connection()
@@ -910,11 +1123,19 @@ if __name__ == "__main__":
     # test1 = TestTypeMapping()
     # test1.setUpClass()
     # test1.test_decimal()
-    # test2 = TestIncrementalReplication()
-    # test2.setUp()
-    # test2.test_with_no_state()
-    # test2.test_with_state()
+    test2 = TestIncrementalReplication()
+    test2.setUp()
+    test2.test_with_no_state()
+    test2.test_with_state()
     test3 = TestMultiKeyIncrementalReplication()
     test3.setUp()
     test3.test_with_no_state()
     test3.test_with_state()
+    test4 = TestHeaderTableIncrementalReplication()
+    test4.setUp()
+    test4.test_with_no_state()
+    test4.test_with_state()
+    test5 = TestMultiColumnHeaderTableIncrementalReplication()
+    test5.setUp()
+    test5.test_with_no_state()
+    test5.test_with_state()
