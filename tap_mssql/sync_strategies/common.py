@@ -8,7 +8,7 @@ import uuid
 
 import singer
 import singer.metrics as metrics
-from singer import metadata, utils
+from singer import metadata, utils, Schema
 
 from tap_mssql.connection import ResultIterator
 
@@ -78,6 +78,38 @@ def get_key_properties(catalog_entry):
         key_properties = stream_metadata.get("table-key-properties", [])
 
     return key_properties
+
+
+def set_up_multi_column_replication(replication_key_metadata, catalog_entry, columns):
+    replication_key_multi_column = replication_key_metadata
+    data_types_of_replication_keys = [
+        catalog_entry.schema.properties[col].additionalProperties.get('sql_data_type', 'No sql data type')
+        if getattr(catalog_entry.schema.properties[col], 'additionalProperties', None)
+        else 'No sql data type'
+        for col in replication_key_metadata
+    ]
+    formats_of_replication_keys = [catalog_entry.schema.properties[col].format for col in replication_key_metadata]
+    types_of_replication_keys = [catalog_entry.schema.properties[col].type for col in replication_key_metadata]
+    if len(set(data_types_of_replication_keys)) == 1 and len(set(formats_of_replication_keys)) == 1 and all(lst == types_of_replication_keys[0] for lst in types_of_replication_keys):
+        # Multiple replication key columns have been provided. All are of the same data type, so can continue. Adding manufactured column into catalog and column selection list:
+        catalog_entry.schema.properties["MultiReplicationKeyColumn"] = Schema(
+            inclusion='automatic',
+            additionalProperties={'sql_data_type': data_types_of_replication_keys[0], 'replication_keys':replication_key_metadata},
+            format=formats_of_replication_keys[0],
+            type=types_of_replication_keys[0],
+        )
+        columns.append('MultiReplicationKeyColumn')
+        replication_key_metadata = 'MultiReplicationKeyColumn'
+    else: # Multiple replication key columns have been provided, but there is a difference in details for each column.
+        msg = "Data types, formats, or types of specified replication key columns are not all the same Data types: '{}', formats: '{}', types: '{}".format(
+            "', '".join(data_types_of_replication_keys),
+            "', '".join(f if f is not None else 'None' for f in formats_of_replication_keys),
+            "', '".join(str(t) if isinstance(t, list) else 'Not a list' for t in types_of_replication_keys))
+        LOGGER.error(msg)
+        raise Exception(
+            msg
+        )
+    return replication_key_metadata, replication_key_multi_column, columns, catalog_entry
   
   
 def prepare_columns_sql(catalog_entry, c):
@@ -133,13 +165,13 @@ def prepare_columns_sql(catalog_entry, c):
     return column_name
 
 
-def generate_select_sql(catalog_entry, columns):
+def generate_select_sql(catalog_entry, columns, multi_column_replication, header_table_replication):
     database_name = get_database_name(catalog_entry)
     escaped_db = escape(database_name)
     escaped_table = escape(catalog_entry.table)
-    
+
     # Added the below lines
-    if columns[-1] == 'MultiReplicationKeyColumn': # Multi-replication-key incremental query
+    if multi_column_replication and not header_table_replication: # Multi-replication-key incremental query
         multi_replication_key_columns = catalog_entry.schema.properties['MultiReplicationKeyColumn'].additionalProperties['replication_keys']
         escaped_multi_replication_key_columns = map(lambda c: prepare_columns_sql(catalog_entry, c), multi_replication_key_columns)
         columns.pop()
@@ -151,6 +183,8 @@ def generate_select_sql(catalog_entry, columns):
             escaped_table
         )
     else:
+        if multi_column_replication and header_table_replication:
+            columns.pop()
         escaped_columns = map(lambda c: prepare_columns_sql(catalog_entry, c), columns)
         select_sql = "SELECT {} FROM {}.{}".format(
             ",".join(escaped_columns),
@@ -237,7 +271,7 @@ def whitelist_bookmark_keys(bookmark_key_set, tap_stream_id, state):
         singer.clear_bookmark(state, tap_stream_id, bk)
 
 
-def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version, params, config, multi_column_replication):
+def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version, params, config, multi_column_replication, header_table_replication, header_table_replication_key_value):
     replication_key = singer.get_bookmark(state, catalog_entry.tap_stream_id, "replication_key")
 
     # query_string = cursor.mogrify(select_sql, params)
@@ -301,7 +335,18 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
                     )
 
             elif replication_method == "INCREMENTAL":
-                if replication_key is not None and multi_column_replication:
+                if replication_key is not None and header_table_replication:
+                    state = singer.write_bookmark(
+                        state, catalog_entry.tap_stream_id, "replication_key", replication_key
+                    )
+
+                    state = singer.write_bookmark(
+                        state,
+                        catalog_entry.tap_stream_id,
+                        "replication_key_value",
+                        header_table_replication_key_value
+                    )
+                elif replication_key is not None and multi_column_replication:
                     state = singer.write_bookmark(
                         state, catalog_entry.tap_stream_id, "replication_key", replication_key
                     )
@@ -323,6 +368,7 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
                         "replication_key_value",
                         record_message.record[replication_key]
                     )
+                
 
             if rows_saved % 1000 == 0:
                 singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
