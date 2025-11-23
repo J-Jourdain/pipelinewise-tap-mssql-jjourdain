@@ -334,19 +334,8 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
                         state, catalog_entry.tap_stream_id, "last_lsn_fetched", last_lsn_fetched
                     )
 
-            elif replication_method == "INCREMENTAL":
-                if replication_key is not None and header_table_replication:
-                    state = singer.write_bookmark(
-                        state, catalog_entry.tap_stream_id, "replication_key", replication_key
-                    )
-
-                    state = singer.write_bookmark(
-                        state,
-                        catalog_entry.tap_stream_id,
-                        "replication_key_value",
-                        header_table_replication_key_value
-                    )
-                elif replication_key is not None and multi_column_replication:
+            elif replication_method == "INCREMENTAL":  
+                if replication_key is not None and multi_column_replication and not header_table_replication:
                     state = singer.write_bookmark(
                         state, catalog_entry.tap_stream_id, "replication_key", replication_key
                     )
@@ -357,7 +346,7 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
                         "replication_key_value",
                         record_message.record['MultiReplicationKeyColumn']
                     )
-                elif replication_key is not None:
+                elif replication_key is not None and not header_table_replication:
                     state = singer.write_bookmark(
                         state, catalog_entry.tap_stream_id, "replication_key", replication_key
                     )
@@ -370,7 +359,19 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
                     )
                 
 
-            if rows_saved % 1000 == 0:
+            if rows_saved % 1000 == 0 and not header_table_replication:
                 singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
+
+    if replication_method == "INCREMENTAL" and replication_key is not None and header_table_replication:
+        state = singer.write_bookmark(
+            state, catalog_entry.tap_stream_id, "replication_key", replication_key
+        )
+
+        state = singer.write_bookmark(
+            state,
+            catalog_entry.tap_stream_id,
+            "replication_key_value",
+            header_table_replication_key_value
+        )
 
     singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
