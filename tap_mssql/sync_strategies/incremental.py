@@ -17,8 +17,6 @@ BOOKMARK_KEYS = {"replication_key", "replication_key_value", "version"}
 
 
 def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, columns):
-    if catalog_entry.table == 'CDRReport' or catalog_entry.table == 'CDRObservation':
-        return
     mssql_conn = MSSQLConnection(config)
     common.whitelist_bookmark_keys(BOOKMARK_KEYS, catalog_entry.tap_stream_id, state)
 

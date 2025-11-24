@@ -560,6 +560,180 @@ table's metadata entry in properties file:
 }
 ```
 
+### Header table based Incremental replication
+
+TODO
+
+This version of tap-mssql also supports the use of header table incremental replication.
+
+This works by specifying a header table, header table ID column, and child table ID column.
+
+This was implemented to prevent the need to perform full refreshes on tables that do not have a reliable incremental key column.
+
+It also works when multiple replication key columns are specified for the header table (date-time fields only).
+
+#### Example
+
+Let's sync the `animals` table, and the `species` table. Lets assume only the `id` column on the animals table is a reliable incremental key, and there is no reliable key on the species table.
+
+```
+mssql> select * from example_db.animals;
++----|----------|----------------------+------------+
+| id | name     | likes_getting_petted | species_id |
++----|----------|----------------------+------------+
+|  1 | George   |                    0 |       5    |
+|  2 | Myrtle   |                    0 |       2    |
+|  3 | Abigail  |                    1 |       4    |
++----|----------|----------------------+------------+
+
+mssql> select * from example_db.species;
++------------|----------+
+| species_id | name     |
++------------|----------+
+|  5         | aardvark |
+|  2         | bear     |
+|  4         | cow      |
++------------|----------+
+
+To pull in the any new records from the `animals` table, a normal incremental query would need to be used, e.g.:
+mssql>  select * from example_db.animals where id >= `id_state_value`;
+
+However, to pull in any relevant new/updated records from the species table which are related to new records in the animals table, a query like this is needed:
+mssql>  select * from example_db.species
+        where species_id in (
+          select species_id from example_db.animals where id >= `id_state_value`
+        );
+```
+
+Nested header table replication can also be used.
+
+#### Example
+
+Let's sync the `animals` table, the `species` table, and the `diet` table. Lets assume only the `id` column on the animals table is a reliable incremental key, and there are no reliable keys on the species or diet tables.
+
+```
+mssql> select * from example_db.animals;
++----|----------|----------------------+------------+
+| id | name     | likes_getting_petted | species_id |
++----|----------|----------------------+------------+
+|  1 | George   |                    0 |       5    |
+|  2 | Myrtle   |                    0 |       2    |
+|  3 | Abigail  |                    1 |       4    |
++----|----------|----------------------+------------+
+
+mssql> select * from example_db.species;
++------------|----------+-----------+
+| species_id | name     |  diet_id  |
++------------|----------+-----------+
+|  5         | aardvark |     2     |
+|  2         | bear     |     6     |
+|  4         | cow      |     8     |
++------------|----------+-----------+
+
+mssql> select * from example_db.diet;
++-----------+----------+
+|  diet_id  |   food   |
++-----------+----------+
+|     2     |  insects |
+|     6     |  fish    |
+|     8     |  grass   |
++-----------+----------+
+
+To pull in any relevant new/updated records from the diet table which are related to new records in the animals table, a query like this is needed:
+mssql>  select * from example_db.diet
+        where diet_id in (
+          select diet_id from example_db.species
+          where species_id in (
+            select species_id from example_db.animals where id >= `id_state_value`
+          )
+        );
+```
+
+The replication method, replication keys, header-table-replication flag, header-table-replication-table, header-table-replication_id, header-table-child-replication_id, and header-multi-column-replication-key flag (optional) are set in the table's metadata entry in properties file:
+
+```json
+{
+  "streams": [
+    {
+      "tap_stream_id": "example_db-animals",
+      "table_name": "animals",
+      "schema": { ... },
+      "metadata": [
+        {
+          "breadcrumb": [],
+          "metadata": {
+            "row-count": 3,
+            "table-key-properties": [],
+            "database-name": "example_db",
+            "selected-by-default": false,
+            "is-view": false,
+            "replication-method": "INCREMENTAL",
+            "replication-key": ["inserted", "updated"],
+            "multi-column-replication-key": true
+          }
+        },
+        ...
+      ],
+      "stream": "animals"
+    },
+    {
+      "tap_stream_id": "example_db-species",
+      "table_name": "species",
+      "schema": { ... },
+      "metadata": [
+        {
+          "breadcrumb": [],
+          "metadata": {
+            "row-count": 3,
+            "table-key-properties": [],
+            "database-name": "example_db",
+            "selected-by-default": false,
+            "is-view": false,
+            "replication-method": "INCREMENTAL",
+            "replication-key": ["inserted", "updated"],
+            "header-multi-column-replication-key": true,
+            "header-table-replication": true,
+            "header-table-replication-table": "animals",
+            "header-table-replication_id": "species_id",
+            "header-table-child-replication_id": "species_id"
+          }
+        },
+        ...
+      ],
+      "stream": "species"
+    },
+    {
+      "tap_stream_id": "example_db-diet",
+      "table_name": "diet",
+      "schema": { ... },
+      "metadata": [
+        {
+          "breadcrumb": [],
+          "metadata": {
+            "row-count": 3,
+            "table-key-properties": [],
+            "database-name": "example_db",
+            "selected-by-default": false,
+            "is-view": false,
+            "replication-method": "INCREMENTAL",
+            "replication-key": ["inserted", "updated"],
+            "header-multi-column-replication-key": true,
+            "header-table-replication": true,
+            "header-table-replication-table": "species",
+            "header-table-replication_id": "diet_id",
+            "header-table-child-replication_id": "diet_id"
+          }
+        },
+        ...
+      ],
+      "stream": "diet"
+    }
+  ]
+}
+```
+
+The replication on the child tables, e.g. species and diet tables, is not really incremental, and a state is not stored during replication. Only when replication is complete, is a state stored. The replication key values stored will relate to the specified replication key on the header table. Esentially, the replication of these child tables is a full table refresh with a dynamic where clause to limit what records come in. In the event of failure partway through replication on a child table, no state update will be stored. This means when the stream is run again, the same records will be replicated again, causing duplicates to land in the target table.
+
 ---
 
 Based on Stitch documentation
