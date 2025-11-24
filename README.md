@@ -562,8 +562,6 @@ table's metadata entry in properties file:
 
 ### Header table based Incremental replication
 
-TODO
-
 This version of tap-mssql also supports the use of header table incremental replication.
 
 This works by specifying a header table, header table ID column, and child table ID column.
