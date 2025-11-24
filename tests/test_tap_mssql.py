@@ -751,6 +751,15 @@ class TestHeaderTableIncrementalReplication(unittest.TestCase):
                 cursor.execute("INSERT INTO child (val, description) VALUES (1, 'Record 1')")
                 cursor.execute("INSERT INTO child (val, description) VALUES (2, 'Record 2')")
                 cursor.execute("INSERT INTO child (val, description) VALUES (3, 'Record 3')")
+                try:
+                    cursor.execute("drop table secondchild")
+                except:
+                    pass
+                cursor.execute("CREATE TABLE secondchild (val int, description varchar(10))")
+                cursor.execute("INSERT INTO secondchild (val, description) VALUES (1, 'Record 1')")
+                cursor.execute("INSERT INTO secondchild (val, description) VALUES (2, 'Record 2')")
+                cursor.execute("INSERT INTO secondchild (val, description) VALUES (3, 'Record 3')")
+                cursor.execute("INSERT INTO secondchild (val, description) VALUES (4, 'Record 4')")
 
         self.catalog = test_utils.discover_catalog(self.conn, {})
 
@@ -770,8 +779,10 @@ class TestHeaderTableIncrementalReplication(unittest.TestCase):
             stream.stream = stream.table
             if stream.table == 'header':
                 test_utils.set_replication_method_and_key(stream, "INCREMENTAL", "updated")
-            else:
-                test_utils.set_replication_method_and_key_and_header_table_config(stream, "INCREMENTAL", "updated", False, True, 'header', 'val')
+            elif stream.table == 'child':
+                test_utils.set_replication_method_and_key_and_header_table_config(stream, "INCREMENTAL", "updated", False, True, 'header', 'val', 'val')
+            elif stream.table == 'secondchild':
+                test_utils.set_replication_method_and_key_and_header_table_config(stream, "INCREMENTAL", "updated", False, True, 'child', 'val', 'val')
 
     def test_with_no_state(self):
         state = {}
@@ -789,10 +800,12 @@ class TestHeaderTableIncrementalReplication(unittest.TestCase):
         record_messages = [message for message in SINGER_MESSAGES if isinstance(message,singer.RecordMessage)]
         header_record_messages = [m for m in record_messages if m.stream == 'dbo-header']
         child_record_messages = [m for m in record_messages if m.stream == 'dbo-child']
+        secondchild_record_messages = [m for m in record_messages if m.stream == 'dbo-secondchild']
         #integer_incremental_record_messages = [m for m in record_messages if m.stream == 'dbo-integer_incremental']
         
         self.assertEqual(len(header_record_messages),3)
         self.assertEqual(len(child_record_messages),3)
+        self.assertEqual(len(secondchild_record_messages),4)
 
     def test_with_state(self):
         state = {
@@ -807,6 +820,11 @@ class TestHeaderTableIncrementalReplication(unittest.TestCase):
                     "replication_key_value": "2017-06-20",
                     "replication_key": "updated",
                 },
+                "dbo-secondchild": {
+                    "version": 1,
+                    "replication_key_value": "2017-06-20",
+                    "replication_key": "updated",
+                }
             }
         }
 
@@ -830,9 +848,11 @@ class TestHeaderTableIncrementalReplication(unittest.TestCase):
         record_messages = [message for message in SINGER_MESSAGES if isinstance(message,singer.RecordMessage)]
         header_record_messages = [m for m in record_messages if m.stream == 'dbo-header']
         child_record_messages = [m for m in record_messages if m.stream == 'dbo-child']
+        secondchild_record_messages = [m for m in record_messages if m.stream == 'dbo-secondchild']
         
         self.assertEqual(len(header_record_messages),2)
         self.assertEqual(len(child_record_messages),2)
+        self.assertEqual(len(secondchild_record_messages),2)
 
 
 class TestMultiColumnHeaderTableIncrementalReplication(unittest.TestCase):
@@ -858,6 +878,15 @@ class TestMultiColumnHeaderTableIncrementalReplication(unittest.TestCase):
                 cursor.execute("INSERT INTO child (val, description) VALUES (1, 'Record 1')")
                 cursor.execute("INSERT INTO child (val, description) VALUES (2, 'Record 2')")
                 cursor.execute("INSERT INTO child (val, description) VALUES (3, 'Record 3')")
+                try:
+                    cursor.execute("drop table secondchild")
+                except:
+                    pass
+                cursor.execute("CREATE TABLE secondchild (val int, description varchar(10))")
+                cursor.execute("INSERT INTO secondchild (val, description) VALUES (1, 'Record 1')")
+                cursor.execute("INSERT INTO secondchild (val, description) VALUES (2, 'Record 2')")
+                cursor.execute("INSERT INTO secondchild (val, description) VALUES (3, 'Record 3')")
+                cursor.execute("INSERT INTO secondchild (val, description) VALUES (4, 'Record 4')")
 
         self.catalog = test_utils.discover_catalog(self.conn, {})
 
@@ -877,8 +906,10 @@ class TestMultiColumnHeaderTableIncrementalReplication(unittest.TestCase):
             stream.stream = stream.table
             if stream.table == 'header':
                 test_utils.set_replication_method_and_key(stream, "INCREMENTAL", ["inserted", "updated"])
-            else:
-                test_utils.set_replication_method_and_key_and_header_table_config(stream, "INCREMENTAL", ["inserted", "updated"], True, True, 'header', 'val')
+            elif stream.table == 'child':
+                test_utils.set_replication_method_and_key_and_header_table_config(stream, "INCREMENTAL", ["inserted", "updated"], True, True, 'header', 'val', 'val')
+            elif stream.table == 'secondchild':
+                test_utils.set_replication_method_and_key_and_header_table_config(stream, "INCREMENTAL", ["inserted", "updated"], True, True, 'child', 'val', 'val')
 
     def test_with_no_state(self):
         state = {}
@@ -896,10 +927,12 @@ class TestMultiColumnHeaderTableIncrementalReplication(unittest.TestCase):
         record_messages = [message for message in SINGER_MESSAGES if isinstance(message,singer.RecordMessage)]
         header_record_messages = [m for m in record_messages if m.stream == 'dbo-header']
         child_record_messages = [m for m in record_messages if m.stream == 'dbo-child']
+        secondchild_record_messages = [m for m in record_messages if m.stream == 'dbo-secondchild']
         #integer_incremental_record_messages = [m for m in record_messages if m.stream == 'dbo-integer_incremental']
         
         self.assertEqual(len(header_record_messages),4)
         self.assertEqual(len(child_record_messages),3)
+        self.assertEqual(len(secondchild_record_messages),4)
 
     def test_with_state(self):
         state = {
@@ -914,6 +947,11 @@ class TestMultiColumnHeaderTableIncrementalReplication(unittest.TestCase):
                     "replication_key_value": "2017-06-20",
                     "replication_key": ["inserted", "updated"],
                 },
+                "dbo-secondchild": {
+                    "version": 1,
+                    "replication_key_value": "2017-06-20",
+                    "replication_key": ["inserted", "updated"],
+                }
             }
         }
 
@@ -937,9 +975,11 @@ class TestMultiColumnHeaderTableIncrementalReplication(unittest.TestCase):
         record_messages = [message for message in SINGER_MESSAGES if isinstance(message,singer.RecordMessage)]
         header_record_messages = [m for m in record_messages if m.stream == 'dbo-header']
         child_record_messages = [m for m in record_messages if m.stream == 'dbo-child']
+        secondchild_record_messages = [m for m in record_messages if m.stream == 'dbo-secondchild']
         
         self.assertEqual(len(header_record_messages),3)
         self.assertEqual(len(child_record_messages),2)
+        self.assertEqual(len(secondchild_record_messages),2)
 
 
 class TestViews(unittest.TestCase):

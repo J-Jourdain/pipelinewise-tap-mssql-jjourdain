@@ -17,6 +17,8 @@ BOOKMARK_KEYS = {"replication_key", "replication_key_value", "version"}
 
 
 def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, columns):
+    if catalog_entry.table == 'CDRReport' or catalog_entry.table == 'CDRObservation':
+        return
     mssql_conn = MSSQLConnection(config)
     common.whitelist_bookmark_keys(BOOKMARK_KEYS, catalog_entry.tap_stream_id, state)
 
@@ -51,8 +53,19 @@ def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, column
         replication_key_metadata, catalog_entry, columns, multi_column_replication, header_table_replication
     )
 
-    header_table_replication_id, header_table_replication_key_value, header_catalog_entry, header_multi_column_replication, header_table_select_sql, replication_key_metadata  = \
-        handle_header_table_replication(stream_metadata, non_cdc_catalog, state, replication_key_metadata, header_table_replication)
+    linked_table_nodes = handle_header_table_replication(stream_metadata, non_cdc_catalog, state, replication_key_metadata, header_table_replication)
+    
+    if linked_table_nodes[0] is not None:
+        header_table_node = linked_table_nodes[0]
+        while header_table_node is not None and header_table_node[0] is not None:
+            header_table_node = header_table_node[0]
+    else:
+        header_table_node = linked_table_nodes
+
+    header_table_replication_key_value = header_table_node[2]
+    header_catalog_entry = header_table_node[3]
+    header_multi_column_replication = header_table_node[4]
+    header_table_replication_key_metadata = header_table_node[6]
 
     LOGGER.info("Beginning SQL")
     with connect_with_backoff(mssql_conn) as open_conn:
@@ -61,7 +74,7 @@ def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, column
             params = {}
 
             if replication_key_value is not None:  # Resuming from state
-                if header_table_replication and header_catalog_entry.schema.properties[replication_key_metadata].format == "date-time":
+                if header_table_replication and header_catalog_entry.schema.properties[header_table_replication_key_metadata].format == "date-time":
                     replication_key_value = datetime.fromtimestamp(
                         pendulum.parse(replication_key_value).timestamp(), tz=timezone.utc
                     )
@@ -73,7 +86,7 @@ def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, column
                 if not header_table_replication and catalog_entry.schema.properties[replication_key_metadata].format == 'rowversion':
                     select_sql += build_rowversion_where_sql(replication_key_metadata, replication_key_value)
                 elif header_table_replication:
-                    select_sql += build_header_table_where_sql(header_table_replication_id, header_table_select_sql, replication_key_metadata, header_multi_column_replication, replication_key_multi_column)
+                    select_sql += build_header_table_where_sql(linked_table_nodes, header_multi_column_replication, replication_key_multi_column, replication_key_metadata)
                 elif multi_column_replication:
                     select_sql += build_multi_column_where_sql(replication_key_multi_column)
                 else:
@@ -105,34 +118,52 @@ def handle_multi_column(replication_key_metadata, catalog_entry, columns, multi_
 
 def handle_header_table_replication(stream_metadata, non_cdc_catalog, state, replication_key_metadata, header_table_replication):
     """Handle header-table replication setup."""
+    header_table_node = [None, None, None, None, None, None, replication_key_metadata]
+
     if not header_table_replication:
-        return None, None, None, None, None, replication_key_metadata, 
+        return header_table_node
 
     header_table_replication_table = stream_metadata.get("header-table-replication-table")
     header_table_replication_id = stream_metadata.get("header-table-replication_id")
+    header_table_child_replication_id = stream_metadata.get("header-table-child-replication_id")
     header_multi_column_replication = stream_metadata.get("header-multi-column-replication-key")
-
+    header_columns = [header_table_replication_id]
     header_catalog_entry = next(
         (copy.deepcopy(stream) for stream in non_cdc_catalog.streams if stream.table == header_table_replication_table),
         None
     )
+
     if header_catalog_entry is None:
         msg = f"No matching stream found for Header table: '{header_table_replication_table}'"
         LOGGER.error(msg)
         raise Exception(msg)
-
     header_table_replication_key_value = singer.get_bookmark(
         state, header_catalog_entry.tap_stream_id, "replication_key_value"
     )
+    
+    header_table_node[1] = header_table_child_replication_id
+    header_table_node[2] = header_table_replication_key_value
+    header_table_node[3] = header_catalog_entry
+    header_table_node[4] = header_multi_column_replication
+    
+    header_stream_metadata = metadata.to_map(header_catalog_entry.metadata).get((), {})
+    header_table_replication_nested = header_stream_metadata.get("header-table-replication")
 
-    header_columns = [header_table_replication_id]
-    if header_multi_column_replication:
-        replication_key_metadata, replication_key_multi_column, header_columns, header_catalog_entry = \
+    if header_multi_column_replication and not header_table_replication_nested:
+        replication_key_metadata, _, header_columns, header_catalog_entry = \
             common.set_up_multi_column_replication(replication_key_metadata, header_catalog_entry, header_columns)
-        
-    header_table_select_sql = common.generate_select_sql(header_catalog_entry, header_columns, header_multi_column_replication, header_table_replication)
+    
+    header_table_node[3] = header_catalog_entry
+    header_table_node[6] = replication_key_metadata
 
-    return header_table_replication_id, header_table_replication_key_value, header_catalog_entry, header_multi_column_replication, header_table_select_sql, replication_key_metadata
+    header_table_select_sql = common.generate_select_sql(header_catalog_entry, header_columns, header_multi_column_replication and not header_table_replication_nested, header_table_replication)
+    header_table_node[5] = header_table_select_sql
+
+    if header_table_replication_nested:
+        header_table_node[0] = handle_header_table_replication(header_stream_metadata, non_cdc_catalog, state, replication_key_metadata, header_table_replication_nested)
+        return header_table_node
+
+    return header_table_node
 
 
 def format_multi_column(replication_key_multi_column):
@@ -148,19 +179,26 @@ def build_rowversion_where_sql(replication_key_metadata, replication_key_value):
     )
 
 
-def build_header_table_where_sql(header_table_replication_id, header_table_select_sql, replication_key_metadata, multi_column, replication_key_multi_column):
-    if multi_column:
+def build_header_table_where_sql(linked_table_nodes, multi_column, replication_key_multi_column, replication_key_metadata):
+
+    if linked_table_nodes[0] is None and multi_column:
         return ' WHERE {} IN ({} WHERE (SELECT MAX(val) FROM (VALUES {}) AS t(val)) >= %(replication_key_value)s)'.format(
-            header_table_replication_id,
-            header_table_select_sql,
+            linked_table_nodes[1],
+            linked_table_nodes[5],
             format_multi_column(replication_key_multi_column)
         )
-    return ' WHERE {} IN ({} WHERE "{}" >= %(replication_key_value)s) ORDER BY {}'.format(
-        header_table_replication_id,
-        header_table_select_sql,
-        replication_key_metadata,
-        header_table_replication_id
-    )
+    elif linked_table_nodes[0] is None:
+        return ' WHERE {} IN ({} WHERE "{}" >= %(replication_key_value)s)'.format(
+            linked_table_nodes[1],
+            linked_table_nodes[5],
+            replication_key_metadata
+        )
+    else:
+        return ' WHERE {} IN ({} {})'.format(
+            linked_table_nodes[1],
+            linked_table_nodes[5],
+            build_header_table_where_sql(linked_table_nodes[0], multi_column, replication_key_multi_column, replication_key_metadata)
+        )
 
 
 def build_multi_column_where_sql(replication_key_multi_column):

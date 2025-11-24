@@ -79,7 +79,7 @@ def set_replication_method_and_key(stream, r_method, r_key):
     return stream
 
 
-def set_replication_method_and_key_and_header_table_config(stream, r_method, r_key, h_replication_multi, h_replication, h_rep_table, h_rep_id):
+def set_replication_method_and_key_and_header_table_config(stream, r_method, r_key, h_replication_multi, h_replication, h_rep_table, h_rep_id, h_ch_rep_id):
     new_md = singer.metadata.to_map(stream.metadata)
     old_md = new_md.get(())
     if r_method:
@@ -95,6 +95,8 @@ def set_replication_method_and_key_and_header_table_config(stream, r_method, r_k
         old_md.update({"header-table-replication-table": h_rep_table})
     if h_rep_id:
         old_md.update({"header-table-replication_id": h_rep_id})
+    if True:
+        old_md.update({"header-table-child-replication_id": h_ch_rep_id})
 
     stream.metadata = singer.metadata.to_list(new_md)
     return stream
