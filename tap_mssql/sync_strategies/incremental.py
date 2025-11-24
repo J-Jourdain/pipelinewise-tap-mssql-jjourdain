@@ -94,6 +94,8 @@ def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, column
             elif replication_key_metadata is not None: # No state stored
                 build_order_by_sql(replication_key_metadata, multi_column_replication, header_table_replication, replication_key_multi_column)
                 
+            LOGGER.info(select_sql)
+
             common.sync_query(
                 cur, catalog_entry, state, select_sql, columns, stream_version, params, config, multi_column_replication, header_table_replication, header_table_replication_key_value
             )
