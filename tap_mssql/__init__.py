@@ -584,13 +584,13 @@ def write_schema_message(catalog_entry, bookmark_properties=[]):
     )
 
 
-def do_sync_incremental(mssql_conn, config, catalog_entry, state, columns):
+def do_sync_incremental(mssql_conn, config, catalog_entry, non_cdc_catalog, state, columns):
     mssql_conn = MSSQLConnection(config)
     md_map = metadata.to_map(catalog_entry.metadata)
     replication_key = md_map.get((), {}).get("replication-key")
     write_schema_message(catalog_entry=catalog_entry, bookmark_properties=[replication_key])
     LOGGER.info("Schema written")
-    incremental.sync_table(mssql_conn, config, catalog_entry, state, columns)
+    incremental.sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, columns)
 
     singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
 
@@ -702,7 +702,7 @@ def sync_non_cdc_streams(mssql_conn, non_cdc_catalog, config, state):
 
             if replication_method == "INCREMENTAL":
                 LOGGER.info(f"syncing {catalog_entry.table} incrementally")
-                do_sync_incremental(mssql_conn, config, catalog_entry, state, columns)
+                do_sync_incremental(mssql_conn, config, catalog_entry, non_cdc_catalog, state, columns)
             elif replication_method == "FULL_TABLE":
                 LOGGER.info(f"syncing {catalog_entry.table} full table")
                 do_sync_full_table(mssql_conn, config, catalog_entry, state, columns)
