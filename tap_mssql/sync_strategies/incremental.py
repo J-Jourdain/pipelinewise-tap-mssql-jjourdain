@@ -92,7 +92,7 @@ def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, column
 
                 params["replication_key_value"] = replication_key_value
             elif replication_key_metadata is not None: # No state stored
-                build_order_by_sql(replication_key_metadata, multi_column_replication, header_table_replication, replication_key_multi_column)
+                select_sql += build_order_by_sql(replication_key_metadata, multi_column_replication, header_table_replication, replication_key_multi_column)
                 
             LOGGER.info(select_sql)
 
@@ -104,8 +104,8 @@ def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, column
 def handle_multi_column(replication_key_metadata, catalog_entry, columns, multi_column_replication, header_table_replication):
     """Enable multi-column replication if needed."""
     if isinstance(replication_key_metadata, list) and len(replication_key_metadata) > 1 \
-       and not multi_column_replication and not header_table_replication:
-        LOGGER.warning("Multiple replication keys detected. Enabling multi-column replication.")
+       and not multi_column_replication:
+        LOGGER.info("Multiple replication keys detected. Enabling multi-column replication.")
         multi_column_replication = True
 
     replication_key_multi_column = replication_key_metadata
@@ -215,9 +215,11 @@ def build_default_where_sql(replication_key_metadata):
 
 
 def build_order_by_sql(replication_key_metadata, multi_column, header_table_replication, replication_key_multi_column):
-    if multi_column: # multi-column incremental replication initial run
+    if multi_column and not header_table_replication: # multi-column incremental replication initial run
         return ' ORDER BY (SELECT MAX(val) FROM (VALUES {}) AS t(val)) ASC'.format(
             format_multi_column(replication_key_multi_column)
         )
     elif not header_table_replication:
-        return ' ORDER BY "{}" ASC'.format(replication_key_metadata)    
+        return ' ORDER BY "{}" ASC'.format(replication_key_metadata)
+    else:
+        return ''
