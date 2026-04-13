@@ -72,11 +72,8 @@ def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, column
             params = {}
 
             if replication_key_value is not None:  # Resuming from state
-                if header_table_replication and header_catalog_entry.schema.properties[header_table_replication_key_metadata].format == "date-time":
-                    replication_key_value = datetime.fromtimestamp(
-                        pendulum.parse(replication_key_value).timestamp(), tz=timezone.utc
-                    )
-                elif catalog_entry.schema.properties[replication_key_metadata].format == "date-time":
+                if ((header_table_replication and header_catalog_entry.schema.properties[header_table_replication_key_metadata].format == "date-time") or 
+                    catalog_entry.schema.properties[replication_key_metadata].format == "date-time"):
                     replication_key_value = datetime.fromtimestamp(
                         pendulum.parse(replication_key_value).timestamp(), tz=timezone.utc
                     )
@@ -92,7 +89,8 @@ def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, column
 
                 params["replication_key_value"] = replication_key_value
             elif replication_key_metadata is not None: # No state stored
-                build_order_by_sql(replication_key_metadata, multi_column_replication, header_table_replication, replication_key_multi_column)
+
+                select_sql += build_order_by_sql(replication_key_metadata, multi_column_replication, header_table_replication, replication_key_multi_column)
                 
             LOGGER.info(select_sql)
 
@@ -104,8 +102,8 @@ def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, column
 def handle_multi_column(replication_key_metadata, catalog_entry, columns, multi_column_replication, header_table_replication):
     """Enable multi-column replication if needed."""
     if isinstance(replication_key_metadata, list) and len(replication_key_metadata) > 1 \
-       and not multi_column_replication and not header_table_replication:
-        LOGGER.warning("Multiple replication keys detected. Enabling multi-column replication.")
+       and not multi_column_replication:
+        LOGGER.info("Multiple replication keys detected. Enabling multi-column replication.")
         multi_column_replication = True
 
     replication_key_multi_column = replication_key_metadata
@@ -182,29 +180,31 @@ def build_rowversion_where_sql(replication_key_metadata, replication_key_value):
 def build_header_table_where_sql(linked_table_nodes, multi_column, replication_key_multi_column, replication_key_metadata):
 
     if linked_table_nodes[0] is None and multi_column:
-        return ' WHERE {} IN ({} WHERE (SELECT MAX(val) FROM (VALUES {}) AS t(val)) >= %(replication_key_value)s)'.format(
-            linked_table_nodes[1],
-            linked_table_nodes[5],
-            format_multi_column(replication_key_multi_column)
+        lookup_subquery = " UNION ALL ".join([f"{linked_table_nodes[5]} WHERE \"{c}\" >= %(replication_key_value)s" for c in replication_key_multi_column])
+        return ' WHERE \"{header_table_child_replication_id}\" IN ({subquery})'.format(
+            header_table_child_replication_id=linked_table_nodes[1],
+            subquery=lookup_subquery
         )
+
     elif linked_table_nodes[0] is None:
-        return ' WHERE {} IN ({} WHERE "{}" >= %(replication_key_value)s)'.format(
-            linked_table_nodes[1],
-            linked_table_nodes[5],
-            replication_key_metadata
+        return ' WHERE \"{header_table_child_replication_id}\" IN ({select} WHERE \"{replication_column}\" >= %(replication_key_value)s)'.format(
+            header_table_child_replication_id=linked_table_nodes[1],
+            select=linked_table_nodes[5],
+            replication_column=replication_key_metadata
         )
     else:
-        return ' WHERE {} IN ({} {})'.format(
-            linked_table_nodes[1],
-            linked_table_nodes[5],
-            build_header_table_where_sql(linked_table_nodes[0], multi_column, replication_key_multi_column, replication_key_metadata)
+        return ' WHERE \"{header_table_child_replication_id}\" IN ({select} {subquery})'.format(
+            header_table_child_replication_id=linked_table_nodes[1],
+            select=linked_table_nodes[5],
+            subquery=build_header_table_where_sql(linked_table_nodes[0], multi_column, replication_key_multi_column, replication_key_metadata)
         )
 
 
 def build_multi_column_where_sql(replication_key_multi_column):
-    formatted = format_multi_column(replication_key_multi_column)
-    return ' WHERE (SELECT MAX(val) FROM (VALUES {}) AS t(val)) >= %(replication_key_value)s ORDER BY (SELECT MAX(val) FROM (VALUES {}) AS t(val)) ASC'.format(
-        formatted, formatted
+    escaped_replication_key_multi_column = [common.escape(col) for col in replication_key_multi_column]
+    case_logic = common.build_greatest_case(escaped_replication_key_multi_column)
+    return ' WHERE {case_logic} >= %(replication_key_value)s ORDER BY {case_logic} ASC'.format(
+        case_logic=case_logic
     )
 
 
@@ -215,9 +215,13 @@ def build_default_where_sql(replication_key_metadata):
 
 
 def build_order_by_sql(replication_key_metadata, multi_column, header_table_replication, replication_key_multi_column):
-    if multi_column: # multi-column incremental replication initial run
-        return ' ORDER BY (SELECT MAX(val) FROM (VALUES {}) AS t(val)) ASC'.format(
-            format_multi_column(replication_key_multi_column)
+    if multi_column and not header_table_replication: # multi-column incremental replication initial run
+        escaped_replication_key_multi_column = [common.escape(col) for col in replication_key_multi_column]
+        case_logic = common.build_greatest_case(escaped_replication_key_multi_column)
+        return ' ORDER BY {case_logic} ASC'.format(
+            case_logic=case_logic
         )
     elif not header_table_replication:
-        return ' ORDER BY "{}" ASC'.format(replication_key_metadata)    
+        return ' ORDER BY "{}" ASC'.format(replication_key_metadata)
+    else:
+        return ''
