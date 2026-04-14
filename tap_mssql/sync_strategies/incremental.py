@@ -24,11 +24,17 @@ def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, column
     stream_metadata = catalog_metadata.get((), {})
     
     replication_key_metadata = stream_metadata.get("replication-key")
+
     # InsertionTime
     replication_key_state = singer.get_bookmark(state, catalog_entry.tap_stream_id, "replication_key")
 
     multi_column_replication = stream_metadata.get("multi-column-replication-key", False)
     header_table_replication = stream_metadata.get("header-table-replication", False)
+
+    if isinstance(replication_key_metadata, list) and len(replication_key_metadata) == 1 \
+        and not multi_column_replication:
+        stream_metadata["replication-key"] = replication_key_metadata[0]
+        replication_key_metadata = replication_key_metadata[0]
 
     replication_key_value = None
 
@@ -101,7 +107,7 @@ def sync_table(mssql_conn, config, catalog_entry, non_cdc_catalog, state, column
 def handle_multi_column(replication_key_metadata, catalog_entry, columns, multi_column_replication, header_table_replication):
     """Enable multi-column replication if needed."""
     if isinstance(replication_key_metadata, list) and len(replication_key_metadata) > 1 \
-       and not multi_column_replication:
+        and not multi_column_replication:
         LOGGER.info("Multiple replication keys detected. Enabling multi-column replication.")
         multi_column_replication = True
 
